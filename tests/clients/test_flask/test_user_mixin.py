@@ -908,3 +908,41 @@ def test_fetch_userinfo_sub_ignores_claims_without_sub():
         ):
             user = client.userinfo(token=token)
             assert user.sub == "123"
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        get_bearer_token(),
+        None,
+    ],
+    ids=["no-id-token", "no-token"],
+)
+def test_fetch_userinfo_require_id_token(token):
+    """With require_id_token, the UserInfo response is refused when no ID
+    token is known.
+    """
+    app, client = make_signed_userinfo_client()
+    with app.test_request_context():
+        with mock.patch(
+            "requests.sessions.Session.send",
+            make_json_userinfo_response({"sub": "123"}),
+        ):
+            with pytest.raises(OAuthError, match="without an ID token"):
+                client.userinfo(token=token, require_id_token=True)
+
+
+def test_fetch_userinfo_require_id_token_with_claims():
+    """With require_id_token, the UserInfo response is returned when its sub
+    is the ID token sub.
+    """
+    app, client = make_signed_userinfo_client()
+    with app.test_request_context():
+        with mock.patch(
+            "requests.sessions.Session.send",
+            make_json_userinfo_response({"sub": "123"}),
+        ):
+            user = client.userinfo(
+                token=get_bearer_token_with_claims(), require_id_token=True
+            )
+            assert user.sub == "123"

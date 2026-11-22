@@ -71,9 +71,15 @@ class AsyncOpenIDMixin:
         The ``sub`` of the response must be the ``sub`` of the ID token
         (OpenID Connect Core §5.3.2). The ID token claims come from the token
         returned by ``authorize_access_token``.
+
+        When the token has no ID token claims, for instance when only the
+        access token was stored, the ``sub`` check is skipped. Pass
+        ``require_id_token=True`` to refuse the UserInfo response in this
+        case.
         """
         metadata = await self.load_server_metadata()
         token = kwargs.pop("token", None)
+        require_id_token = kwargs.pop("require_id_token", False)
         if token is None:
             token = await _get_requested_token(self, kwargs.get("request"))
 
@@ -87,7 +93,7 @@ class AsyncOpenIDMixin:
         else:
             userinfo = _parse_json_userinfo(resp, metadata)
 
-        _check_userinfo_sub(userinfo, token)
+        _check_userinfo_sub(userinfo, token, require_id_token)
         return userinfo
 
     async def parse_id_token(

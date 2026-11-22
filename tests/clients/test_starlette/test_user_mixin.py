@@ -320,6 +320,7 @@ async def run_fetch_signed_userinfo(
     content_type=b"application/jwt",
     token=None,
     fetched_token=None,
+    require_id_token=False,
     **metadata,
 ):
 
@@ -359,7 +360,9 @@ async def run_fetch_signed_userinfo(
 
     req_scope = {"type": "http", "session": {}}
     req = Request(req_scope)
-    return await client.userinfo(request=req, token=token)
+    return await client.userinfo(
+        request=req, token=token, require_id_token=require_id_token
+    )
 
 
 @pytest.mark.asyncio
@@ -632,3 +635,39 @@ async def test_fetch_userinfo_signed_jwt_sub_mismatch():
             jwks={"keys": [secret_key.as_dict()]},
             token=get_bearer_token_with_claims(),
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "token",
+    [
+        get_bearer_token(),
+        None,
+    ],
+    ids=["no-id-token", "no-token"],
+)
+async def test_fetch_userinfo_require_id_token(token):
+    """With require_id_token, the UserInfo response is refused when no ID
+    token is known.
+    """
+    with pytest.raises(OAuthError, match="without an ID token"):
+        await run_fetch_signed_userinfo(
+            json.dumps({"sub": "123"}),
+            content_type=b"application/json",
+            token=token,
+            require_id_token=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_fetch_userinfo_require_id_token_with_claims():
+    """With require_id_token, the UserInfo response is returned when its sub
+    is the ID token sub.
+    """
+    user = await run_fetch_signed_userinfo(
+        json.dumps({"sub": "123"}),
+        content_type=b"application/json",
+        token=get_bearer_token_with_claims(),
+        require_id_token=True,
+    )
+    assert user.sub == "123"

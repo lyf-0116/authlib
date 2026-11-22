@@ -94,14 +94,19 @@ def _validate_signed_userinfo(token, metadata, client_id, leeway=120):
     return UserInfo(claims)
 
 
-def _check_userinfo_sub(userinfo, token):
+def _check_userinfo_sub(userinfo, token, require_id_token=False):
     """Check that the sub of the UserInfo response is the sub of the ID token.
 
     The ID token claims are in the userinfo key of the token returned by
-    authorize_access_token. Without them, there is nothing to compare.
+    authorize_access_token. Without them, there is nothing to compare: the
+    check is skipped, unless ``require_id_token`` is true.
     """
     claims = token.get("userinfo") if token else None
     if not claims or "sub" not in claims:
+        if require_id_token:
+            raise OAuthError(
+                description="The UserInfo sub cannot be verified without an ID token."
+            )
         return
 
     # Per OpenID Connect Core §5.3.2, the sub Claim in the UserInfo Response
@@ -193,9 +198,15 @@ class OpenIDMixin:
         The ``sub`` of the response must be the ``sub`` of the ID token
         (OpenID Connect Core §5.3.2). The ID token claims come from the token
         returned by ``authorize_access_token``.
+
+        When the token has no ID token claims, for instance when only the
+        access token was stored, the ``sub`` check is skipped. Pass
+        ``require_id_token=True`` to refuse the UserInfo response in this
+        case.
         """
         metadata = self.load_server_metadata()
         token = kwargs.pop("token", None)
+        require_id_token = kwargs.pop("require_id_token", False)
         if token is None:
             token = self._get_requested_token(kwargs.get("request"))
 
@@ -209,7 +220,7 @@ class OpenIDMixin:
         else:
             userinfo = _parse_json_userinfo(resp, metadata)
 
-        _check_userinfo_sub(userinfo, token)
+        _check_userinfo_sub(userinfo, token, require_id_token)
         return userinfo
 
     def parse_id_token(

@@ -1,0 +1,7 @@
+Added
+~~~~~
+
+- The OpenID Connect client ``userinfo`` methods accept
+  ``require_id_token=True`` to refuse the UserInfo response when the token
+  has no ID token claims to compare the ``sub`` against, instead of silently
+  skipping the check.
