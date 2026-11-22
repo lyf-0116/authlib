@@ -1,4 +1,5 @@
 import time
+import warnings
 
 from joserfc import jwt
 from joserfc.errors import InvalidKeyIdError
@@ -12,7 +13,57 @@ from authlib.oidc.core import CodeIDToken
 from authlib.oidc.core import ImplicitIDToken
 from authlib.oidc.core import UserInfo
 
+from .errors import MissingNonceError
 from .errors import OAuthError
+
+#: Nonce replay protection is required: parsing fails when the application
+#: does not provide an expected nonce.
+NONCE_POLICY_REQUIRED = "required"
+#: A warning is emitted when the application does not provide an expected
+#: nonce. This is the default policy, for transitioning existing
+#: integrations that omit nonce validation.
+NONCE_POLICY_WARN = "warn"
+#: Missing expected nonces are silently accepted. The application takes
+#: responsibility for the absence of replay protection.
+NONCE_POLICY_IGNORED = "ignored"
+
+NONCE_POLICIES = frozenset(
+    {NONCE_POLICY_REQUIRED, NONCE_POLICY_WARN, NONCE_POLICY_IGNORED}
+)
+
+
+class MissingNonceWarning(UserWarning):
+    """Emitted when an ID token is parsed without an expected nonce."""
+
+
+def enforce_nonce_policy(nonce, nonce_policy):
+    """Apply the configured policy when no expected nonce was provided.
+
+    The expected nonce stays fully controlled by the application: token
+    claims cannot enable or disable its validation, and an empty value still
+    skips the comparison in the claims. The policy only makes the absence of
+    replay protection observable and, when configured, fatal.
+    """
+    if nonce:
+        return
+
+    if nonce_policy == NONCE_POLICY_REQUIRED:
+        raise MissingNonceError()
+    if nonce_policy == NONCE_POLICY_WARN:
+        warnings.warn(
+            "parse_id_token() called without an expected nonce: the ID "
+            "token is accepted without replay protection. Pass the nonce "
+            "sent in the authorization request, set nonce_policy="
+            "'required' to reject such tokens, or set it to 'ignored' to "
+            "silence this warning.",
+            MissingNonceWarning,
+            stacklevel=2,
+        )
+    elif nonce_policy != NONCE_POLICY_IGNORED:
+        raise ValueError(
+            f"Invalid nonce_policy {nonce_policy!r}; expected one of "
+            f"{sorted(NONCE_POLICIES)}."
+        )
 
 
 class _SignedUserInfo(JWTClaims):
@@ -148,6 +199,11 @@ class OpenIDMixin:
     #: Minimum number of seconds between two fetches of the JWK set caused by
     #: an ID token or a signed UserInfo response with an unknown ``kid``.
     jwks_refresh_interval = 60
+    #: Policy applied when ``parse_id_token`` receives no expected nonce:
+    #: ``"warn"`` (default) emits a warning, ``"required"`` raises
+    #: ``MissingNonceError`` and ``"ignored"`` silently skips replay
+    #: protection. The per-call ``nonce_policy`` argument overrides it.
+    nonce_policy = NONCE_POLICY_WARN
     _jwk_set_refreshed_at = None
 
     def fetch_jwk_set(self, force=False):
@@ -213,15 +269,31 @@ class OpenIDMixin:
         return userinfo
 
     def parse_id_token(
-        self, token, nonce, claims_options=None, claims_cls=None, leeway=120
+        self,
+        token,
+        nonce,
+        claims_options=None,
+        claims_cls=None,
+        leeway=120,
+        nonce_policy=None,
     ):
         """Return UserInfo after validating the token's ``id_token``.
 
         The expected ``nonce`` is controlled by the application. Token claims
         such as ``nonce_supported`` cannot disable its validation.
+
+        When no expected nonce is provided, replay protection is not
+        performed. The ``nonce_policy`` argument or the client-level
+        ``nonce_policy`` setting decides what happens: ``"warn"`` (default)
+        emits a ``MissingNonceWarning``, ``"required"`` raises
+        ``MissingNonceError`` and ``"ignored"`` accepts the token silently.
         """
         if "id_token" not in token:
             return None
+
+        if nonce_policy is None:
+            nonce_policy = self.nonce_policy
+        enforce_nonce_policy(nonce, nonce_policy)
 
         claims_params = dict(
             nonce=nonce,

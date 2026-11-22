@@ -10,6 +10,7 @@ from authlib.oidc.core import ImplicitIDToken
 from authlib.oidc.core import UserInfo
 
 from .async_app import _get_requested_token
+from .sync_openid import NONCE_POLICY_WARN
 from .sync_openid import _check_userinfo_sub
 from .sync_openid import _get_claims_options
 from .sync_openid import _get_id_token_algorithms
@@ -18,6 +19,7 @@ from .sync_openid import _is_jwt_response
 from .sync_openid import _may_refresh_jwk_set
 from .sync_openid import _parse_json_userinfo
 from .sync_openid import _validate_signed_userinfo
+from .sync_openid import enforce_nonce_policy
 
 __all__ = ["AsyncOpenIDMixin"]
 
@@ -26,6 +28,11 @@ class AsyncOpenIDMixin:
     #: Minimum number of seconds between two fetches of the JWK set caused by
     #: an ID token or a signed UserInfo response with an unknown ``kid``.
     jwks_refresh_interval = 60
+    #: Policy applied when ``parse_id_token`` receives no expected nonce:
+    #: ``"warn"`` (default) emits a warning, ``"required"`` raises
+    #: ``MissingNonceError`` and ``"ignored"`` silently skips replay
+    #: protection. The per-call ``nonce_policy`` argument overrides it.
+    nonce_policy = NONCE_POLICY_WARN
     _jwk_set_refreshed_at = None
 
     async def fetch_jwk_set(self, force=False):
@@ -91,11 +98,21 @@ class AsyncOpenIDMixin:
         return userinfo
 
     async def parse_id_token(
-        self, token, nonce, claims_options=None, claims_cls=None, leeway=120
+        self,
+        token,
+        nonce,
+        claims_options=None,
+        claims_cls=None,
+        leeway=120,
+        nonce_policy=None,
     ):
         """Return an instance of UserInfo from token's ``id_token``."""
         if "id_token" not in token:
             return None
+
+        if nonce_policy is None:
+            nonce_policy = self.nonce_policy
+        enforce_nonce_policy(nonce, nonce_policy)
 
         claims_params = dict(
             nonce=nonce,

@@ -139,6 +139,21 @@ claims in the received token. Passing ``nonce=None`` to ``parse_id_token()`` omi
 nonce validation and should only be used when the application has deliberately
 chosen a flow without an expected nonce.
 
+A missing expected nonce means the ID token is accepted without replay
+protection. To make this explicit, ``parse_id_token()`` applies a configurable
+``nonce_policy``:
+
+- ``"warn"`` (the default): emit a ``MissingNonceWarning`` but accept the token.
+- ``"required"``: raise a ``MissingNonceError`` and reject the token.
+- ``"ignored"``: keep the historical silent behavior.
+
+Set the policy for every call when registering the client, or override it per
+``parse_id_token()`` call:
+
+.. code-block:: python
+
+    oauth.google.nonce_policy = "ignored"
+
 The ID Token signature is checked with the algorithms of the provider
 ``id_token_signing_alg_values_supported`` metadata, or ``RS256`` when this
 metadata is missing. Unsigned ID Tokens are always refused. If your provider

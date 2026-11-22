@@ -15,6 +15,7 @@ from .errors import MismatchingIssuerError
 from .errors import MismatchingStateError
 from .errors import MissingRequestTokenError
 from .errors import MissingTokenError
+from .sync_openid import NONCE_POLICIES
 
 log = logging.getLogger(__name__)
 
@@ -209,6 +210,7 @@ class OAuth2Base:
         server_metadata_url=None,
         compliance_fix=None,
         client_auth_methods=None,
+        nonce_policy=None,
         user_agent=None,
         **kwargs,
     ):
@@ -232,6 +234,13 @@ class OAuth2Base:
         self._server_metadata_url = server_metadata_url
         self._register_kwargs = kwargs
         self.server_metadata = dict(kwargs)
+        if nonce_policy is not None:
+            if nonce_policy not in NONCE_POLICIES:
+                raise ValueError(
+                    f"Invalid nonce_policy {nonce_policy!r}; expected one of "
+                    f"{sorted(NONCE_POLICIES)}."
+                )
+            self.nonce_policy = nonce_policy
 
     def _on_update_token(self, token, refresh_token=None, access_token=None):
         raise NotImplementedError()

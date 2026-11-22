@@ -1,5 +1,6 @@
 import json
 import time
+import warnings
 
 import pytest
 from httpx2 import ASGITransport
@@ -12,6 +13,8 @@ from joserfc.errors import UnsupportedAlgorithmError
 from joserfc.jwk import KeySet
 from starlette.requests import Request
 
+from authlib.integrations.base_client.errors import MissingNonceError
+from authlib.integrations.base_client.sync_openid import MissingNonceWarning
 from authlib.integrations.starlette_client import OAuth
 from authlib.integrations.starlette_client import OAuthError
 from authlib.oidc.core.grants.util import create_half_hash
@@ -133,6 +136,71 @@ async def test_parse_id_token_nonce_supported(token_nonce):
             await client.parse_id_token(token, nonce="n")
 
     assert (await client.parse_id_token(token, nonce=None)).sub == "123"
+
+
+def _register_nonce_policy_client(**kwargs):
+    oauth = OAuth()
+    return oauth.register(
+        "dev",
+        client_id="dev",
+        client_secret="dev",
+        jwks={"keys": [secret_key.as_dict()]},
+        issuer="https://provider.test",
+        id_token_signing_alg_values_supported=["HS256"],
+        **kwargs,
+    )
+
+
+def _create_id_token_without_nonce():
+    now = int(time.time())
+    claims = {
+        "sub": "123",
+        "iss": "https://provider.test",
+        "aud": "dev",
+        "iat": now,
+        "exp": now + 3600,
+    }
+    token = get_bearer_token()
+    token["id_token"] = jwt.encode({"alg": "HS256"}, claims, secret_key)
+    return token
+
+
+@pytest.mark.asyncio
+async def test_parse_id_token_missing_nonce_warns_by_default():
+    client = _register_nonce_policy_client()
+    token = _create_id_token_without_nonce()
+    with pytest.warns(MissingNonceWarning):
+        assert (await client.parse_id_token(token, nonce=None)).sub == "123"
+
+    with pytest.warns(MissingNonceWarning):
+        assert (await client.parse_id_token(token, nonce="")).sub == "123"
+
+
+@pytest.mark.asyncio
+async def test_parse_id_token_nonce_policy_required():
+    client = _register_nonce_policy_client(nonce_policy="required")
+    token = _create_id_token_without_nonce()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(MissingNonceError):
+            await client.parse_id_token(token, nonce=None)
+
+    with pytest.warns(MissingNonceWarning):
+        await client.parse_id_token(token, nonce=None, nonce_policy="warn")
+
+
+@pytest.mark.asyncio
+async def test_parse_id_token_nonce_policy_ignored():
+    client = _register_nonce_policy_client(nonce_policy="ignored")
+    token = _create_id_token_without_nonce()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert (await client.parse_id_token(token, nonce=None)).sub == "123"
+
+
+def test_parse_id_token_invalid_nonce_policy():
+    with pytest.raises(ValueError):
+        _register_nonce_policy_client(nonce_policy="strict")
 
 
 @pytest.mark.asyncio

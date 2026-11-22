@@ -1,4 +1,5 @@
 import time
+import warnings
 from unittest import mock
 
 import pytest
@@ -12,6 +13,8 @@ from joserfc.errors import UnsupportedAlgorithmError
 from joserfc.jwk import KeySet
 from joserfc.jwk import OctKey
 
+from authlib.integrations.base_client.errors import MissingNonceError
+from authlib.integrations.base_client.sync_openid import MissingNonceWarning
 from authlib.integrations.flask_client import OAuth
 from authlib.integrations.flask_client import OAuthError
 from authlib.oidc.core.grants.util import create_half_hash
@@ -132,6 +135,101 @@ def test_parse_id_token_nonce_supported(token_nonce):
 
         # Only the application can explicitly omit the expected nonce.
         assert client.parse_id_token(token, nonce=None).sub == "123"
+
+
+def _register_nonce_policy_client(**kwargs):
+    app = Flask(__name__)
+    app.secret_key = "!"
+    oauth = OAuth(app)
+    client = oauth.register(
+        "dev",
+        client_id="dev",
+        client_secret="dev",
+        jwks={"keys": [secret_key.as_dict()]},
+        issuer="https://provider.test",
+        id_token_signing_alg_values_supported=["HS256"],
+        **kwargs,
+    )
+    return app, client
+
+
+def test_parse_id_token_missing_nonce_warns_by_default():
+    """A missing expected nonce is observable without breaking the flow."""
+    app, client = _register_nonce_policy_client()
+    token = {"id_token": _create_id_token("HS256", secret_key)}
+    with app.test_request_context():
+        with pytest.warns(MissingNonceWarning):
+            assert client.parse_id_token(token, nonce=None).sub == "123"
+
+        # An empty nonce is treated like an omitted one.
+        with pytest.warns(MissingNonceWarning):
+            assert client.parse_id_token(token, nonce="").sub == "123"
+
+        # Providing a nonce never warns.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", MissingNonceWarning)
+            now = int(time.time())
+            claims = {
+                "sub": "123",
+                "iss": "https://provider.test",
+                "aud": "dev",
+                "iat": now,
+                "exp": now + 3600,
+            }
+            token = {"id_token": jwt.encode({"alg": "HS256"}, claims, secret_key)}
+            with pytest.raises(MissingClaimError):
+                client.parse_id_token(token, nonce="n")
+            token = {"id_token": _create_id_token("HS256", secret_key)}
+            assert client.parse_id_token(token, nonce="n").sub == "123"
+
+
+def test_parse_id_token_nonce_policy_required():
+    """The required policy turns a missing nonce into a hard failure."""
+    app, client = _register_nonce_policy_client(nonce_policy="required")
+    token = {"id_token": _create_id_token("HS256", secret_key)}
+    with app.test_request_context():
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            with pytest.raises(MissingNonceError):
+                client.parse_id_token(token, nonce=None)
+
+        # The per-call policy overrides the client policy.
+        with pytest.warns(MissingNonceWarning):
+            client.parse_id_token(token, nonce=None, nonce_policy="warn")
+
+        # With a nonce provided, the required policy validates as before.
+        claims = {
+            "sub": "123",
+            "iss": "https://provider.test",
+            "aud": "dev",
+            "iat": int(time.time()),
+            "exp": int(time.time()) + 3600,
+            "nonce": "n",
+        }
+        id_token = jwt.encode({"alg": "HS256"}, claims, secret_key)
+        assert client.parse_id_token({"id_token": id_token}, nonce="n").sub == "123"
+
+
+def test_parse_id_token_nonce_policy_ignored():
+    """The ignored policy keeps the historical silent behavior."""
+    app, client = _register_nonce_policy_client(nonce_policy="ignored")
+    token = {"id_token": _create_id_token("HS256", secret_key)}
+    with app.test_request_context():
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            assert client.parse_id_token(token, nonce=None).sub == "123"
+
+
+def test_parse_id_token_invalid_nonce_policy():
+    """Unknown policies are rejected at registration and at parse time."""
+    with pytest.raises(ValueError):
+        _register_nonce_policy_client(nonce_policy="strict")
+
+    app, client = _register_nonce_policy_client()
+    token = {"id_token": _create_id_token("HS256", secret_key)}
+    with app.test_request_context():
+        with pytest.raises(ValueError):
+            client.parse_id_token(token, nonce=None, nonce_policy="strict")
 
 
 def test_runtime_error_fetch_jwks_uri():

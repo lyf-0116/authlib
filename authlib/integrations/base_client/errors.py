@@ -32,3 +32,12 @@ class MismatchingStateError(OAuthError):
 
 class MismatchingIssuerError(OAuthError):
     error = "mismatching_issuer"
+
+
+class MissingNonceError(OAuthError):
+    error = "missing_nonce"
+    description = (
+        "No expected nonce was provided when parsing the ID token, so replay "
+        "protection is disabled. Pass the nonce sent in the authorization "
+        "request, or set nonce_policy to 'warn' or 'ignored' to acknowledge it."
+    )
