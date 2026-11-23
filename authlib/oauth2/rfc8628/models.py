@@ -14,6 +14,9 @@ class DeviceCredentialMixin:
     def is_expired(self):
         raise NotImplementedError()
 
+    def is_consumed(self):
+        raise NotImplementedError()
+
 
 class DeviceCredentialDict(dict, DeviceCredentialMixin):
     def get_client_id(self):
@@ -36,3 +39,6 @@ class DeviceCredentialDict(dict, DeviceCredentialMixin):
         if expires_at is not None:
             return expires_at < time.time()
         return False
+
+    def is_consumed(self):
+        return bool(self.get("consumed"))

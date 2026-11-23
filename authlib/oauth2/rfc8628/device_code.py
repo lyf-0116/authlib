@@ -118,7 +118,8 @@ class DeviceCodeGrant(BaseGrant, TokenEndpointMixin):
         token.
         """
         client = self.request.client
-        scope = self.request.credential.get_scope()
+        credential = self.request.credential
+        scope = credential.get_scope()
         token = self.generate_token(
             user=self.request.user,
             scope=scope,
@@ -126,11 +127,21 @@ class DeviceCodeGrant(BaseGrant, TokenEndpointMixin):
         )
         log.debug("Issue token %r to %r", token, client)
         self.save_token(token)
+        # A device credential is single-use: once a token is issued, the
+        # credential is consumed and can never be exchanged again.
+        self.consume_device_credential(credential)
         return JsonResponse(token, headers=self.TOKEN_RESPONSE_HEADER)
 
     def validate_device_credential(self, credential):
         if credential.is_expired():
             raise ExpiredTokenError()
+
+        if credential.is_consumed():
+            # The credential already reached a terminal state: a token was
+            # issued or the user denied the request. Its state can only
+            # move forward, so it can never become pending or approved
+            # again.
+            raise InvalidGrantError("Invalid 'device_code' in payload")
 
         user_code = credential.get_user_code()
         user_grant = self.query_user_grant(user_code)
@@ -138,6 +149,11 @@ class DeviceCodeGrant(BaseGrant, TokenEndpointMixin):
         if user_grant is not None:
             user, approved = user_grant
             if not approved:
+                # Denial is terminal: consume the credential so that later
+                # polls can never fall back to "authorization_pending",
+                # even if the stored user decision expires before the
+                # credential itself.
+                self.consume_device_credential(credential)
                 raise AccessDeniedError()
             return user
 
@@ -173,6 +189,26 @@ class DeviceCodeGrant(BaseGrant, TokenEndpointMixin):
                 return user, allowed == "1"
 
         Note, user grant information is saved by verification endpoint.
+        """
+        raise NotImplementedError()
+
+    def consume_device_credential(self, credential):
+        """Mark the device credential as consumed. Developers MUST
+        implement it in subclass::
+
+            def consume_device_credential(self, credential):
+                credential.consumed = True
+                credential.save()
+
+        It is called once the credential reaches a terminal state, that is
+        when an access token has been issued or the user has denied the
+        request. The credential MUST NOT be deleted: keeping the record
+        lets ``is_consumed`` reject further exchanges of the same
+        ``device_code`` and preserves the polling state used by
+        ``should_slow_down``.
+
+        :param credential: the credential previously returned by
+            ``query_device_credential``.
         """
         raise NotImplementedError()
 

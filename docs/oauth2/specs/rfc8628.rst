@@ -59,6 +59,10 @@ endpoint, while the user approves the request in a browser on another device:
    ``authorization_pending``. It is ``slow_down`` if the device polls too
    often, ``expired_token`` if the code has expired, and ``access_denied``
    if the user refused.
+   The device credential is single-use: once the user has answered, the
+   credential moves to a terminal state and can never become pending
+   again. Once an access token has been issued, the credential is consumed
+   and the same ``device_code`` cannot be exchanged for another token.
 5. The user opens ``verification_uri`` in a browser. The application
    implements this endpoint.
 6. The user logs in. The verification endpoint shows a form to enter
@@ -138,6 +142,13 @@ But first, we need to implement the missing methods:
             user = User.query.get(user_id)
             return user, allowed == '1'
 
+        def consume_device_credential(self, credential):
+            # mark the credential as consumed; do not delete it, so that
+            # further exchanges of the same device_code are rejected and
+            # the polling state used by should_slow_down is preserved
+            credential.consumed = True
+            credential.save()
+
         def should_slow_down(self, credential):
             # developers can return True/False based on credential
             return False
@@ -146,6 +157,14 @@ But first, we need to implement the missing methods:
 
 Note ``query_user_grant``, we are fetching data from redis. This data
 was saved from verification endpoint when end user granted the request.
+
+Note ``consume_device_credential``, the grant calls it when the
+credential reaches a terminal state: an access token has been issued, or
+the user has denied the request. The credential MUST NOT be deleted.
+Keeping the record lets ``is_consumed`` reject further exchanges of the
+same ``device_code``, and keeps a denied request from falling back to
+``authorization_pending`` when the user grant record expires before the
+credential itself.
 
 Verification Endpoint
 ---------------------
@@ -166,13 +185,19 @@ it:
         allowed = request.form['allowed'] == 'yes'
         user_code = request.form['user_code']
         key = 'oauth_user_grant:' + user_code
-        redis.set(key, f'{current_user.id} {int(allowed)}', 12)
+        # keep the decision at least as long as the device credential
+        # itself (the "expires_in" value of the device authorization
+        # response); a shorter lifetime would let a denied request fall
+        # back to "authorization_pending"
+        redis.set(key, f'{current_user.id} {int(allowed)}', 1800)
         return render_template('verification.html')
 
 Check points:
 
 1. route should match ``get_verification_uri`` in Device Authorization Endpoint
 2. user grant should match ``query_user_grant`` in Device Code Grant
+3. the user decision must be kept at least as long as the device
+   credential; once the user has answered, the decision is final
 
 
 

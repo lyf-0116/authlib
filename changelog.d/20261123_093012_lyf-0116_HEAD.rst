@@ -1,0 +1,15 @@
+Security
+~~~~~~~~
+
+- The device code grant consumes the device credential once it reaches a
+  terminal state: an issued access token can no longer be exchanged again
+  with the same ``device_code``, and a denied request can no longer fall
+  back to ``authorization_pending`` when the stored user decision expires
+  before the credential.
+
+Breaking changes
+~~~~~~~~~~~~~~~~
+
+- ``DeviceCodeGrant`` subclasses must implement the new
+  ``consume_device_credential`` method, and device credential models must
+  implement ``is_consumed`` (``DeviceCredentialDict`` already does).

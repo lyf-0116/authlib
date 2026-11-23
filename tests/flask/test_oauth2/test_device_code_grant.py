@@ -40,12 +40,26 @@ device_credentials = {
         "expires_in": 1800,
         "user_code": "code",
     },
+    "replay-code": {
+        "client_id": "client-id",
+        "expires_in": 1800,
+        "user_code": "code",
+    },
+    "deny-expire-code": {
+        "client_id": "client-id",
+        "expires_in": 1800,
+        "user_code": "denied-expire",
+    },
     "pending-code": {
         "client_id": "client-id",
         "expires_in": 1800,
         "user_code": "none",
     },
 }
+
+
+# user codes whose grant record has expired in the user grant storage
+expired_user_grants = set()
 
 
 class DeviceCodeGrant(_DeviceCodeGrant):
@@ -67,7 +81,12 @@ class DeviceCodeGrant(_DeviceCodeGrant):
             return db.session.get(User, 1), True
         if user_code == "denied":
             return db.session.get(User, 1), False
+        if user_code == "denied-expire" and user_code not in expired_user_grants:
+            return db.session.get(User, 1), False
         return None
+
+    def consume_device_credential(self, credential):
+        device_credentials[credential["device_code"]]["consumed"] = True
 
     def should_slow_down(self, credential):
         return False
@@ -238,6 +257,61 @@ def test_get_access_token(test_client):
     )
     resp = json.loads(rv.data)
     assert "access_token" in resp
+
+
+def test_access_token_issued_only_once(test_client):
+    """A device code is consumed by the first token exchange."""
+    rv = test_client.post(
+        "/oauth/token",
+        data={
+            "grant_type": DeviceCodeGrant.GRANT_TYPE,
+            "device_code": "replay-code",
+            "client_id": "client-id",
+        },
+    )
+    resp = json.loads(rv.data)
+    assert "access_token" in resp
+
+    rv = test_client.post(
+        "/oauth/token",
+        data={
+            "grant_type": DeviceCodeGrant.GRANT_TYPE,
+            "device_code": "replay-code",
+            "client_id": "client-id",
+        },
+    )
+    resp = json.loads(rv.data)
+    assert resp["error"] == "invalid_grant"
+    assert "access_token" not in resp
+
+
+def test_denied_is_terminal(test_client):
+    """A denied device code never falls back to authorization_pending,
+    even if the stored user decision expires before the credential."""
+    rv = test_client.post(
+        "/oauth/token",
+        data={
+            "grant_type": DeviceCodeGrant.GRANT_TYPE,
+            "device_code": "deny-expire-code",
+            "client_id": "client-id",
+        },
+    )
+    resp = json.loads(rv.data)
+    assert resp["error"] == "access_denied"
+
+    # the user grant record expires in its own storage
+    expired_user_grants.add("denied-expire")
+
+    rv = test_client.post(
+        "/oauth/token",
+        data={
+            "grant_type": DeviceCodeGrant.GRANT_TYPE,
+            "device_code": "deny-expire-code",
+            "client_id": "client-id",
+        },
+    )
+    resp = json.loads(rv.data)
+    assert resp["error"] == "invalid_grant"
 
 
 def test_missing_client_id(test_client):
