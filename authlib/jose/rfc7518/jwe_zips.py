@@ -1,5 +1,6 @@
 import zlib
 
+from authlib.deprecate import deprecate
 from authlib.jose.errors import ExceededSizeError
 
 from ..rfc7516 import JsonWebEncryption
@@ -34,5 +35,19 @@ class DeflateZipAlgorithm(JWEZipAlgorithm):
         return value
 
 
-def register_jwe_rfc7518():
-    JsonWebEncryption.register_algorithm(DeflateZipAlgorithm())
+JWE_ZIP_ALGORITHMS = [DeflateZipAlgorithm()]
+
+
+def register_jwe_rfc7518(cls=None):
+    """Compatibility wrapper for the old global registration entry point."""
+    if cls is None:
+        deprecate(
+            "Calling register_jwe_rfc7518() without a target class is "
+            "deprecated; pass JsonWebEncryption or a JWE subclass instead.",
+            version="2.0.0",
+        )
+        cls = JsonWebEncryption
+
+    from . import register_jwe_rfc7518 as register
+
+    return register(cls)

@@ -62,11 +62,19 @@ class JsonWebEncryption:
             raise ValueError(f"Invalid algorithm for JWE, {algorithm!r}")
 
         if algorithm.algorithm_location == "alg":
-            cls.ALG_REGISTRY[algorithm.name] = algorithm
+            registry_name = "ALG_REGISTRY"
         elif algorithm.algorithm_location == "enc":
-            cls.ENC_REGISTRY[algorithm.name] = algorithm
+            registry_name = "ENC_REGISTRY"
         elif algorithm.algorithm_location == "zip":
-            cls.ZIP_REGISTRY[algorithm.name] = algorithm
+            registry_name = "ZIP_REGISTRY"
+        else:
+            raise ValueError(f"Invalid algorithm for JWE, {algorithm!r}")
+
+        registry = cls.__dict__.get(registry_name)
+        if registry is None:
+            registry = dict(getattr(cls, registry_name))
+            setattr(cls, registry_name, registry)
+        registry[algorithm.name] = algorithm
 
     def serialize_compact(self, protected, payload, key, sender_key=None):
         """Generate a JWE Compact Serialization.

@@ -5,6 +5,7 @@ from .jwe_algs import ECDHESAlgorithm
 from .jwe_algs import u32be_len_input
 from .jwe_encs import JWE_ENC_ALGORITHMS
 from .jwe_encs import CBCHS2EncAlgorithm
+from .jwe_zips import JWE_ZIP_ALGORITHMS
 from .jwe_zips import DeflateZipAlgorithm
 from .jws_algs import JWS_ALGORITHMS
 from .oct_key import OctKey
@@ -20,10 +21,8 @@ def register_jwe_rfc7518(cls):
     for algorithm in JWE_ALG_ALGORITHMS:
         cls.register_algorithm(algorithm)
 
-    for algorithm in JWE_ENC_ALGORITHMS:
+    for algorithm in [*JWE_ENC_ALGORITHMS, *JWE_ZIP_ALGORITHMS]:
         cls.register_algorithm(algorithm)
-
-    cls.register_algorithm(DeflateZipAlgorithm())
 
 
 __all__ = [
@@ -36,4 +35,6 @@ __all__ = [
     "AESAlgorithm",
     "ECDHESAlgorithm",
     "CBCHS2EncAlgorithm",
+    "DeflateZipAlgorithm",
+    "JWE_ZIP_ALGORITHMS",
 ]

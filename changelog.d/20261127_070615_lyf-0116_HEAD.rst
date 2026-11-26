@@ -1,0 +1,10 @@
+Fixed
+~~~~~
+
+- ``register_jwe_rfc7518`` now registers the ``DEF`` compression algorithm with the other RFC 7518 JWE algorithms on the target class.
+- JWE subclasses create their own algorithm registries when first registered, so separate JWE configurations do not mutate each other.
+
+Deprecated
+~~~~~~~~~~
+
+- Calling ``authlib.jose.rfc7518.jwe_zips.register_jwe_rfc7518()`` without a target class is a compatibility wrapper; pass ``JsonWebEncryption`` or a JWE subclass explicitly.
