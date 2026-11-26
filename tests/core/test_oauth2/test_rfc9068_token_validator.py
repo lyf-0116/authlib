@@ -96,3 +96,48 @@ def test_garbage_token_raises_invalid_token_error():
 
     with pytest.raises(InvalidTokenError):
         validator.authenticate_token("not.a.jwt")
+
+
+def test_wrong_token_type_error():
+    """A wrong typ header is reported separately from missing claims."""
+    key = OctKey.generate_key()
+    validator = _make_validator(key)
+
+    token_string = jwt.encode(
+        {"alg": "HS256", "typ": "JWT"},
+        {
+            "iss": ISSUER,
+            "aud": RESOURCE_SERVER,
+            "sub": "user-1",
+            "client_id": "client-1",
+            "iat": int(time.time()),
+            "exp": int(time.time()) + 3600,
+            "jti": "unique-jti",
+        },
+        key,
+    )
+    token = validator.authenticate_token(token_string)
+    with pytest.raises(InvalidTokenError, match=r"at\+jwt"):
+        validator.validate_token(token, [], None)
+
+
+def test_missing_claim_error():
+    """A missing required claim is reported separately from a wrong typ."""
+    key = OctKey.generate_key()
+    validator = _make_validator(key)
+
+    token_string = jwt.encode(
+        {"alg": "HS256", "typ": "at+jwt"},
+        {
+            "iss": ISSUER,
+            "aud": RESOURCE_SERVER,
+            "sub": "user-1",
+            "client_id": "client-1",
+            "iat": int(time.time()),
+            "exp": int(time.time()) + 3600,
+        },
+        key,
+    )
+    token = validator.authenticate_token(token_string)
+    with pytest.raises(InvalidTokenError, match="Missing claim: 'jti'"):
+        validator.validate_token(token, [], None)

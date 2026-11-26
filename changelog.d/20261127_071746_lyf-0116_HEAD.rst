@@ -1,0 +1,17 @@
+Changed
+~~~~~~~
+
+- The ``authlib.oauth2.rfc7523.JWTBearerTokenValidator`` and the
+  ``authlib.oauth2.rfc9068.JWTBearerTokenValidator`` now share a common
+  core, parameterized by validation policies. The RFC 9068 validator
+  reports a wrong ``typ`` header with a dedicated error description,
+  separately from missing claims.
+
+Deprecated
+~~~~~~~~~~
+
+- The ``authlib.oauth2.rfc7523.JWTBearerTokenValidator`` now checks the
+  ``at+jwt`` ``typ`` header and the ``jti`` claim of the JWT access tokens
+  it validates. Tokens that fail those checks are still accepted for now,
+  but emit an ``AuthlibDeprecationWarning``. They will be rejected in
+  version 2.0.0.

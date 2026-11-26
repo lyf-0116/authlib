@@ -152,3 +152,34 @@ def test_deprecated(oct_key):
     """The validator is deprecated in favor of the RFC 9068 one."""
     with pytest.warns(AuthlibDeprecationWarning, match="rfc9068"):
         JWTBearerTokenValidator(oct_key)
+
+
+def test_missing_typ_and_jti_warn(oct_key, claims):
+    """Tokens without the at+jwt typ header or a jti claim are still
+    accepted, but emit deprecation warnings until the checks are enforced.
+    """
+    validator = JWTBearerTokenValidator(oct_key)
+    token_string = jwt.encode({"alg": "HS256"}, claims, oct_key)
+    with pytest.warns(AuthlibDeprecationWarning) as record:
+        token = validator.authenticate_token(token_string)
+    assert token is not None
+    messages = [str(warning.message) for warning in record]
+    assert any("at+jwt" in message for message in messages)
+    assert any("jti" in message for message in messages)
+
+
+def test_no_warning_with_typ_and_jti(oct_key, claims, recwarn):
+    """A token with the at+jwt typ header and a jti claim warns about
+    nothing but the validator deprecation itself.
+    """
+    validator = JWTBearerTokenValidator(oct_key)
+    token_string = jwt.encode(
+        {"alg": "HS256", "typ": "at+jwt"}, {**claims, "jti": "id-1"}, oct_key
+    )
+    token = validator.authenticate_token(token_string)
+    assert token is not None
+    assert not [
+        warning
+        for warning in recwarn.list
+        if "at+jwt" in str(warning.message) or "jti" in str(warning.message)
+    ]

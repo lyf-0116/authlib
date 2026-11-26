@@ -8,7 +8,7 @@ from authlib._joserfc_helpers import import_any_key
 from authlib.deprecate import deprecate
 
 from ..rfc6749 import TokenMixin
-from ..rfc6750 import BearerTokenValidator
+from ..rfc9068.token_validator import BaseJWTBearerTokenValidator
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ class JWTBearerToken(TokenMixin, dict):
         return False
 
 
-class JWTBearerTokenValidator(BearerTokenValidator):
+class JWTBearerTokenValidator(BaseJWTBearerTokenValidator):
     """Validate JWT access tokens, such as those of ``JWTBearerTokenGenerator``.
 
     :param public_key: the key that verifies the token signature.
@@ -63,21 +63,27 @@ class JWTBearerTokenValidator(BearerTokenValidator):
             "use 'authlib.oauth2.rfc9068.JWTBearerTokenValidator' instead.",
             version="2.0.0",
         )
-        super().__init__(realm, **extra_attributes)
+        super().__init__(
+            issuer=issuer,
+            resource_server=audience,
+            realm=realm,
+            leeway=leeway,
+            require_audience=False,
+            token_type_policy="warn",
+            jti_policy="warn",
+            reject_unexpected_audience=True,
+            **extra_attributes,
+        )
         self.public_key = import_any_key(public_key)
-        self.leeway = leeway
-        claims_options = {
-            "exp": {"essential": True},
-            "client_id": {"essential": True},
-            "grant_type": {"essential": True},
-        }
-        if issuer:
-            claims_options["iss"] = {"essential": True, "value": issuer}
+        self.claims_options = self.get_claims_options()
 
-        if audience:
-            claims_options["aud"] = {"essential": True, "value": audience}
+    def get_jwks(self):
+        return self.public_key
 
-        self.claims_options = claims_options
+    def get_claims_options(self):
+        claims_options = super().get_claims_options()
+        claims_options["grant_type"] = {"essential": True}
+        return claims_options
 
     def authenticate_token(self, token_string: str):
         try:
@@ -85,6 +91,12 @@ class JWTBearerTokenValidator(BearerTokenValidator):
         except JoseError as error:
             logger.debug("Authenticate token failed. %r", error)
             return None
+
+        # Existing issuers do not necessarily declare the 'at+jwt' typ
+        # header or a 'jti' claim yet, so those are only warned about for
+        # now. They will be enforced in version 2.0.0.
+        self.check_token_type(token.header)
+        self.check_jti(token.claims)
 
         claims_requests = jwt.JWTClaimsRegistry(
             leeway=self.leeway, **self.claims_options
@@ -98,8 +110,8 @@ class JWTBearerTokenValidator(BearerTokenValidator):
         # Per RFC 7519 §4.1.3, if the principal processing the claim does not
         # identify itself with a value in the "aud" claim when this claim is
         # present, then the JWT MUST be rejected.
-        if "aud" in token.claims and "aud" not in self.claims_options:
+        if self.has_unexpected_audience(token.claims, self.claims_options):
             logger.debug("Authenticate token failed. Unexpected 'aud' claim.")
             return None
 
-        return JWTBearerToken(token.claims)
+        return self.token_cls(token.claims)
