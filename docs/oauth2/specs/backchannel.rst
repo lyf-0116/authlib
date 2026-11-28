@@ -311,6 +311,84 @@ The logout token is a JWT with the following claims:
 
 The ``nonce`` claim is explicitly forbidden by the specification.
 
+Receiving Logout Notifications
+------------------------------
+
+The Relying Party registers a ``backchannel_logout_uri`` and receives a
+form-encoded ``POST`` request with a ``logout_token`` parameter. This request
+does not go through the browser, so there is no OAuth ``state`` parameter and
+no CSRF check. The logout token is the only credential: validate its signature,
+``iss``, ``aud``, ``iat`` and ``exp`` claims, and its back-channel logout event.
+The token must not contain a ``nonce`` claim.
+
+:func:`validate_logout_token` performs these checks. It does not store the
+``jti`` claim, because replay protection needs application state:
+
+.. skip: next "fragment of the back-channel logout view"
+
+.. code-block:: python
+
+    from authlib.oidc.backchannel import validate_logout_token
+
+    claims = validate_logout_token(
+        logout_token,
+        jwks=provider_public_jwks,
+        issuer="https://auth.example.com",
+        audience="client-id",
+    )
+    sub = claims.get("sub")
+    sid = claims.get("sid")
+
+:class:`BackchannelLogoutReceiver` combines the validation with a replay
+record and a session destruction hook:
+
+.. skip: next "fragment of the session store implementation"
+
+.. code-block:: python
+
+    from authlib.oidc.backchannel import BackchannelLogoutReceiver
+
+
+    class MyLogoutReceiver(BackchannelLogoutReceiver):
+        def destroy_session(self, sub, sid):
+            # Delete every local session matching sub and sid. Raise an
+            # exception if the session store is unavailable.
+            sessions = Session.query.filter_by(sub=sub, sid=sid)
+            sessions.delete()
+
+
+    receiver = MyLogoutReceiver(
+        issuer="https://auth.example.com",
+        audience="client-id",
+        jwks=provider_public_jwks,
+    )
+    status = receiver.handle(logout_token)
+
+``handle`` answers ``200`` on success, ``400`` for an invalid or replayed
+token, and ``500`` when the session cannot be destroyed. The last case is
+different from an invalid token: the OpenID Provider may retry the request,
+so the receiver releases the ``jti`` record.
+
+The web client integrations provide a ``backchannel_logout`` method for each
+framework. It reads the form body, validates the token, consumes its ``jti``,
+and calls ``destroy_session(sub, sid)``:
+
+.. skip: next "fragment of the back-channel logout view"
+
+.. code-block:: python
+
+    class MyOAuth2App(FlaskOAuth2App):
+        def destroy_session(self, sub, sid):
+            delete_local_sessions(sub=sub, sid=sid)
+
+
+    @app.route("/backchannel_logout", methods=["POST"])
+    def backchannel_logout():
+        return oauth.google.backchannel_logout()
+
+The same method is available as ``backchannel_logout(request)`` on Django and
+as ``await oauth.google.backchannel_logout(request)`` on Starlette.
+
 Client Registration
 -------------------
 
@@ -391,6 +469,15 @@ API Reference
     :members:
 
 .. autofunction:: create_logout_token
+
+.. autofunction:: validate_logout_token
+
+.. autoclass:: LogoutTokenClaims
+    :member-order: bysource
+
+.. autoclass:: BackchannelLogoutReceiver
+    :member-order: bysource
+    :members:
 
 .. autoclass:: ClientMetadataClaims
     :member-order: bysource

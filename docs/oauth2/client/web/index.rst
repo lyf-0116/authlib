@@ -823,6 +823,38 @@ for detailed examples:
 - :ref:`django_client`
 - :ref:`starlette_client`
 
+Back-Channel Logout
+-------------------
+
+`OpenID Connect Back-Channel Logout`_ lets the OpenID Provider notify your
+application directly, without a browser, when a user session ends elsewhere.
+This is what makes an administrator-initiated logout, or a logout on another
+device, terminate the local session too.
+
+Register a POST route and call the ``backchannel_logout`` method of the
+client. It validates the ``logout_token``, consumes its ``jti``, and calls
+``destroy_session(sub, sid)``:
+
+.. skip: next "fragment of the back-channel logout view"
+
+.. code-block:: python
+
+    class MyOAuth2App(FlaskOAuth2App):
+        def destroy_session(self, sub, sid):
+            delete_local_sessions(sub=sub, sid=sid)
+
+
+    @app.route("/backchannel_logout", methods=["POST"])
+    def backchannel_logout():
+        return oauth.google.backchannel_logout()
+
+Do not add a CSRF check to this route. The OpenID Provider calls it directly,
+without a browser session, so there is no OAuth ``state`` to check. The logout
+token signature and claims are the credential. The method returns ``400`` for
+an invalid or replayed token, and ``500`` when the session cannot be destroyed.
+
+.. _OpenID Connect Back-Channel Logout: https://openid.net/specs/openid-connect-backchannel-1_0.html
+
 .. toctree::
     :maxdepth: 1
 

@@ -1,15 +1,20 @@
+import inspect
+
 from joserfc import jwt
 from joserfc.errors import InvalidKeyIdError
+from joserfc.errors import JoseError
 from joserfc.jwk import KeySet
 from joserfc.jws import JWSRegistry
 
 from authlib.common.security import generate_token
 from authlib.common.urls import add_params_to_uri
+from authlib.oidc.backchannel import LogoutTokenClaims
 from authlib.oidc.core import CodeIDToken
 from authlib.oidc.core import ImplicitIDToken
 from authlib.oidc.core import UserInfo
 
 from .async_app import _get_requested_token
+from .errors import InvalidLogoutTokenError
 from .sync_openid import _check_userinfo_sub
 from .sync_openid import _get_claims_options
 from .sync_openid import _get_id_token_algorithms
@@ -117,6 +122,77 @@ class AsyncOpenIDMixin:
         claims.validate(leeway=leeway)
         return UserInfo(claims)
 
+    async def parse_logout_token(
+        self,
+        token,
+        claims_options=None,
+        leeway=120,
+        now=None,
+        consume_jti=True,
+    ):
+        """Validate a back-channel logout token.
+
+        See :meth:`authlib.integrations.base_client.OpenIDMixin.parse_logout_token`.
+        """
+        if not token or not isinstance(token, str):
+            raise InvalidLogoutTokenError(
+                description="Missing or invalid 'logout_token' parameter."
+            )
+
+        metadata = await self.load_server_metadata()
+        claims_options = _get_claims_options(claims_options, metadata)
+        claims_options.setdefault("iss", {"essential": True})
+        claims_options.setdefault("aud", {"essential": True})
+        claims_options.setdefault("iat", {"essential": True})
+        claims_options.setdefault("exp", {"essential": True})
+        claims_options.setdefault("jti", {"essential": True})
+        claims_options.setdefault("events", {"essential": True})
+
+        if self.client_id:
+            audience = claims_options["aud"]
+            if not {"value", "values", "validate"} & audience.keys():
+                audience["value"] = self.client_id
+
+        alg_values = _get_id_token_algorithms(metadata)
+        try:
+            decoded = await self._decode_jwt(token, metadata, alg_values)
+            claims = LogoutTokenClaims(
+                decoded.claims,
+                decoded.header,
+                claims_options,
+                params={"client_id": self.client_id},
+            )
+            claims.validate(now=now, leeway=leeway)
+        except JoseError as error:
+            raise InvalidLogoutTokenError(
+                error.error or None, error.description
+            ) from error
+
+        if consume_jti and not await self.validate_jti(claims, claims["jti"]):
+            raise InvalidLogoutTokenError(
+                "jti", "The back-channel logout token was already used."
+            )
+        return claims
+
+    async def validate_logout_token(self, token, **kwargs):
+        """Validate a back-channel logout token. See :meth:`parse_logout_token`."""
+        return await self.parse_logout_token(token, **kwargs)
+
+    async def validate_jti(self, claims, jti):
+        """Return ``True`` if ``jti`` is new, and record it as consumed."""
+        if await _maybe_await(self.framework.is_jti_used(jti)):
+            return False
+        await _maybe_await(self.framework.record_jti(jti, claims.get("exp")))
+        return True
+
+    async def release_jti(self, jti):
+        """Forget a logout token ``jti`` after a session destruction failure."""
+        await _maybe_await(self.framework.release_jti(jti))
+
+    async def destroy_session(self, sub, sid):
+        """Destroy the local session matching ``sub`` and ``sid``."""
+        return await _maybe_await(self.framework.destroy_session(sub, sid))
+
     async def create_logout_url(
         self,
         post_logout_redirect_uri=None,
@@ -153,3 +229,9 @@ class AsyncOpenIDMixin:
 
         url = add_params_to_uri(end_session_endpoint, params)
         return {"url": url, "state": state}
+
+
+async def _maybe_await(value):
+    if inspect.isawaitable(value):
+        return await value
+    return value

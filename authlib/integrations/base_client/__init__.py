@@ -1,3 +1,6 @@
+from .backchannel import call_destroy_session
+from .errors import BackchannelLogoutError
+from .errors import InvalidLogoutTokenError
 from .errors import InvalidTokenError
 from .errors import MismatchingIssuerError
 from .errors import MismatchingStateError
@@ -20,11 +23,14 @@ __all__ = [
     "OAuth2Mixin",
     "OpenIDMixin",
     "FrameworkIntegration",
+    "call_destroy_session",
     "OAuthError",
     "MissingRequestTokenError",
     "MissingTokenError",
     "TokenExpiredError",
     "InvalidTokenError",
+    "InvalidLogoutTokenError",
+    "BackchannelLogoutError",
     "UnsupportedTokenTypeError",
     "MismatchingStateError",
     "MismatchingIssuerError",

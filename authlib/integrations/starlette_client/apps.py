@@ -1,8 +1,15 @@
-from starlette.datastructures import URL
-from starlette.responses import RedirectResponse
+import inspect
 
+from starlette.datastructures import URL
+from starlette.responses import JSONResponse
+from starlette.responses import RedirectResponse
+from starlette.responses import Response
+
+from ..base_client import BackchannelLogoutError
 from ..base_client import BaseApp
+from ..base_client import InvalidLogoutTokenError
 from ..base_client import OAuthError
+from ..base_client import call_destroy_session
 from ..base_client.async_app import AsyncOAuth1Mixin
 from ..base_client.async_app import AsyncOAuth2Mixin
 from ..base_client.async_openid import AsyncOpenIDMixin
@@ -57,6 +64,63 @@ class StarletteOAuth2App(
     StarletteAppMixin, AsyncOAuth2Mixin, AsyncOpenIDMixin, BaseApp
 ):
     client_cls = AsyncOAuth2Client
+
+    async def backchannel_logout(
+        self,
+        request=None,
+        logout_token=None,
+        *,
+        destroy_session=None,
+        logout=None,
+        **kwargs,
+    ):
+        """Handle an OpenID Connect back-channel logout request.
+
+        :param request: HTTP request instance from the Starlette view.
+        :param logout_token: The logout token. Read from the form body when it
+            is omitted.
+        :return: A Starlette response with status 200 on success, 400 for an
+            invalid token, or 500 when the session cannot be destroyed.
+        """
+        if request is not None and isinstance(request, str):
+            logout_token, request = request, None
+        if logout_token is not None and hasattr(logout_token, "form"):
+            request = logout_token
+            logout_token = None
+        if logout_token is None and request is not None:
+            form = await request.form()
+            logout_token = form.get("logout_token")
+
+        try:
+            claims = await self.parse_logout_token(logout_token, consume_jti=False)
+            if not await self.validate_jti(claims, claims["jti"]):
+                raise InvalidLogoutTokenError(
+                    "jti", "The back-channel logout token was already used."
+                )
+        except InvalidLogoutTokenError as error:
+            return JSONResponse(
+                {"error": error.error, "error_description": error.description},
+                status_code=400,
+            )
+
+        hook = destroy_session or logout or self.destroy_session
+        try:
+            result = call_destroy_session(hook, claims)
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            await self.release_jti(claims["jti"])
+            error = BackchannelLogoutError()
+            return JSONResponse(
+                {
+                    "error": error.error,
+                    "error_description": "The local session could not be destroyed.",
+                },
+                status_code=error.status_code,
+            )
+        return Response(status_code=200)
+
+    handle_backchannel_logout = backchannel_logout
 
     async def logout_redirect(
         self, request, post_logout_redirect_uri=None, id_token_hint=None, **kwargs

@@ -10,6 +10,7 @@ from authlib.common.urls import url_decode
 from authlib.common.urls import urlparse
 from authlib.integrations.django_client import OAuth
 from authlib.integrations.django_client import OAuthError
+from authlib.oidc.backchannel import create_logout_token
 from authlib.oidc.core.grants.util import create_half_hash
 from tests.util import HMAC_SECRET
 
@@ -18,6 +19,7 @@ from ..util import get_bearer_token_with_claims
 from ..util import mock_send_value
 
 dev_client = {"client_id": "dev-key", "client_secret": "dev-secret"}
+secret_key = jwk.import_key(HMAC_SECRET, "oct")
 
 
 def test_register_remote_app():
@@ -61,6 +63,54 @@ def test_register_from_settings():
     oauth.register("dev")
     assert oauth.dev.client_id == "dev-key"
     assert oauth.dev.client_secret == "dev-secret"
+
+
+def test_backchannel_logout(factory):
+    """A valid logout token destroys the local session identified by sub and sid."""
+    oauth = OAuth()
+    client = oauth.register(
+        "dev",
+        client_id="dev",
+        client_secret="dev",
+        issuer="https://provider.test",
+        jwks={"keys": [secret_key.as_dict()]},
+        id_token_signing_alg_values_supported=["HS256"],
+    )
+    token = create_logout_token(
+        "https://provider.test",
+        "dev",
+        secret_key,
+        algorithm="HS256",
+        sub="user-1",
+        sid="sess-1",
+    )
+    request = factory.post("/backchannel_logout", {"logout_token": token})
+    request.session = factory.session
+    destroyed = []
+    client.destroy_session = lambda sub, sid: destroyed.append((sub, sid))
+
+    response = client.backchannel_logout(request)
+
+    assert response.status_code == 200
+    assert destroyed == [("user-1", "sess-1")]
+
+
+def test_backchannel_logout_bad_token(factory):
+    """An invalid logout token gets a 400 response and destroys nothing."""
+    oauth = OAuth()
+    client = oauth.register(
+        "dev",
+        client_id="dev",
+        client_secret="dev",
+        issuer="https://provider.test",
+        jwks={"keys": [secret_key.as_dict()]},
+        id_token_signing_alg_values_supported=["HS256"],
+    )
+    request = factory.post("/backchannel_logout", {"logout_token": "not-a-token"})
+    request.session = factory.session
+    client.destroy_session = lambda sub, sid: pytest.fail("must not destroy")
+
+    assert client.backchannel_logout(request).status_code == 400
 
 
 def test_oauth1_authorize(factory):

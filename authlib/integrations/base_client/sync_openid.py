@@ -2,16 +2,19 @@ import time
 
 from joserfc import jwt
 from joserfc.errors import InvalidKeyIdError
+from joserfc.errors import JoseError
 from joserfc.jwk import KeySet
 from joserfc.jws import JWSRegistry
 
 from authlib.common.security import generate_token
 from authlib.common.urls import add_params_to_uri
 from authlib.oauth2.claims import JWTClaims
+from authlib.oidc.backchannel import LogoutTokenClaims
 from authlib.oidc.core import CodeIDToken
 from authlib.oidc.core import ImplicitIDToken
 from authlib.oidc.core import UserInfo
 
+from .errors import InvalidLogoutTokenError
 from .errors import OAuthError
 
 
@@ -243,6 +246,102 @@ class OpenIDMixin:
         claims = claims_cls(token.claims, token.header, claims_options, claims_params)
         claims.validate(leeway=leeway)
         return UserInfo(claims)
+
+    def parse_logout_token(
+        self,
+        token,
+        claims_options=None,
+        leeway=120,
+        now=None,
+        consume_jti=True,
+    ):
+        """Validate a back-channel logout token.
+
+        The signature, ``iss``, ``aud``, ``iat``, ``exp`` and ``events``
+        claims are checked with the OpenID Connect provider metadata, like an
+        ID token. A token with a ``nonce`` claim is rejected. The ``jti`` is
+        consumed once, so a replayed token is rejected.
+
+        :param token: The compact serialized logout token.
+        :param claims_options: Extra joserfc claims options.
+        :param leeway: The allowed clock skew, in seconds.
+        :param now: The current timestamp, for testing.
+        :param consume_jti: Whether to record the ``jti`` as used.
+        :return: The validated :class:`~authlib.oidc.backchannel.LogoutTokenClaims`.
+        :raises InvalidLogoutTokenError: If the token is invalid or replayed.
+        """
+        if not token or not isinstance(token, str):
+            raise InvalidLogoutTokenError(
+                description="Missing or invalid 'logout_token' parameter."
+            )
+
+        metadata = self.load_server_metadata()
+        claims_options = _get_claims_options(claims_options, metadata)
+        claims_options.setdefault("iss", {"essential": True})
+        claims_options.setdefault("aud", {"essential": True})
+        claims_options.setdefault("iat", {"essential": True})
+        claims_options.setdefault("exp", {"essential": True})
+        claims_options.setdefault("jti", {"essential": True})
+        claims_options.setdefault("events", {"essential": True})
+
+        if self.client_id:
+            audience = claims_options["aud"]
+            if not {"value", "values", "validate"} & audience.keys():
+                audience["value"] = self.client_id
+
+        alg_values = _get_id_token_algorithms(metadata)
+        try:
+            decoded = self._decode_jwt(token, metadata, alg_values)
+            claims = LogoutTokenClaims(
+                decoded.claims,
+                decoded.header,
+                claims_options,
+                params={"client_id": self.client_id},
+            )
+            claims.validate(now=now, leeway=leeway)
+        except JoseError as error:
+            raise InvalidLogoutTokenError(
+                error.error or None, error.description
+            ) from error
+
+        if consume_jti and not self.validate_jti(claims, claims["jti"]):
+            raise InvalidLogoutTokenError(
+                "jti", "The back-channel logout token was already used."
+            )
+        return claims
+
+    def validate_logout_token(self, token, **kwargs):
+        """Validate a back-channel logout token. See :meth:`parse_logout_token`."""
+        return self.parse_logout_token(token, **kwargs)
+
+    def validate_jti(self, claims, jti):
+        """Return ``True`` if ``jti`` is new, and record it as consumed.
+
+        Override this method to use the application replay records::
+
+            def validate_jti(self, claims, jti):
+                if redis.get(f"logout:{jti}"):
+                    return False
+                redis.set(f"logout:{jti}", 1, ex=claims["exp"] - int(time.time()))
+                return True
+        """
+        if self.framework.is_jti_used(jti):
+            return False
+        self.framework.record_jti(jti, claims.get("exp"))
+        return True
+
+    def release_jti(self, jti):
+        """Forget a logout token ``jti`` after a session destruction failure."""
+        self.framework.release_jti(jti)
+
+    def destroy_session(self, sub, sid):
+        """Destroy the local session matching ``sub`` and ``sid``.
+
+        The default delegates to the framework integration. Override this
+        method in the remote application when the session store is
+        application-specific.
+        """
+        return self.framework.destroy_session(sub, sid)
 
     def create_logout_url(
         self,

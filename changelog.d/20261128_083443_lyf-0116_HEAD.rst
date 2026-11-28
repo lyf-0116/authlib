@@ -1,0 +1,46 @@
+.. A new scriv changelog fragment.
+..
+.. Uncomment the section that is right (remove the leading dots).
+.. For top level release notes, leave all the headers commented out.
+..
+.. Breaking changes
+.. ~~~~~~~~~~~~~~~~
+..
+.. - A bullet item for the Breaking changes category.
+..
+.. Added
+.. ~~~~~
+..
+.. - A bullet item for the Added category.
+..
+.. Changed
+.. ~~~~~~~
+..
+.. - A bullet item for the Changed category.
+..
+.. Deprecated
+.. ~~~~~~~~~~
+..
+.. - A bullet item for the Deprecated category.
+..
+.. Fixed
+.. ~~~~~
+..
+.. - A bullet item for the Fixed category.
+..
+.. Security
+.. ~~~~~~~~
+..
+.. - A bullet item for the Security category.
+..
+Added
+~~~~~
+
+- OpenID Connect Relying Parties can receive back-channel logout
+  notifications. ``validate_logout_token`` checks the signature, ``iss``,
+  ``aud``, ``iat``, ``exp``, the back-channel logout event, and rejects a
+  ``nonce`` claim. ``BackchannelLogoutReceiver`` also consumes the ``jti``
+  claim and destroys the matching session. The Flask, Django and Starlette
+  client integrations expose a ``backchannel_logout`` method for the
+  ``backchannel_logout_uri`` endpoint. This endpoint is called directly by
+  the OpenID Provider and does not use CSRF protection.

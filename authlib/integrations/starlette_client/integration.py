@@ -65,6 +65,42 @@ class StarletteIntegration(FrameworkIntegration):
             session.pop(key, None)
             self._clear_session_state(session)
 
+    async def is_jti_used(self, jti):
+        key = self._get_jti_key(jti)
+        if self.cache:
+            return bool(await self.cache.get(key))
+
+        records = self._get_jti_records()
+        expires_at = records.get(jti)
+        if expires_at is None:
+            return False
+        if expires_at < time.time():
+            records.pop(jti, None)
+            return False
+        return True
+
+    async def record_jti(self, jti, expires_at=None):
+        now = time.time()
+        if expires_at is None:
+            expires_at = now + self.expires_in
+        timeout = max(1, int(expires_at - now))
+
+        key = self._get_jti_key(jti)
+        if self.cache:
+            await self.cache.set(key, 1, timeout)
+        else:
+            self._get_jti_records()[jti] = expires_at
+
+    async def release_jti(self, jti):
+        key = self._get_jti_key(jti)
+        if self.cache:
+            await self.cache.delete(key)
+        else:
+            self._get_jti_records().pop(jti, None)
+
+    async def destroy_session(self, sub, sid):
+        return True
+
     def update_token(self, token, refresh_token=None, access_token=None):
         pass
 

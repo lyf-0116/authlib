@@ -3,11 +3,14 @@ from flask import redirect
 from flask import request
 from flask import session
 
+from ..base_client import BackchannelLogoutError
 from ..base_client import BaseApp
+from ..base_client import InvalidLogoutTokenError
 from ..base_client import OAuth1Mixin
 from ..base_client import OAuth2Mixin
 from ..base_client import OAuthError
 from ..base_client import OpenIDMixin
+from ..base_client import call_destroy_session
 from ..requests_client import OAuth1Session
 from ..requests_client import OAuth2Session
 
@@ -78,6 +81,56 @@ class FlaskOAuth1App(FlaskAppMixin, OAuth1Mixin, BaseApp):
 
 class FlaskOAuth2App(FlaskAppMixin, OAuth2Mixin, OpenIDMixin, BaseApp):
     client_cls = OAuth2Session
+
+    def backchannel_logout(
+        self, logout_token=None, *, destroy_session=None, logout=None, **kwargs
+    ):
+        """Handle an OpenID Connect back-channel logout request.
+
+        The ``logout_token`` comes from the form body sent by the OpenID
+        Provider. This endpoint does not use the OAuth ``state`` parameter:
+        the OpenID Provider calls it directly, without a browser, and the
+        logout token is the only credential.
+
+        The token signature, issuer, audience, lifetime and back-channel
+        logout event are validated, and its ``jti`` is consumed. Then
+        :meth:`destroy_session` is called with the ``sub`` and ``sid`` claims.
+
+        :param logout_token: The logout token. Read from the form body when
+            it is omitted.
+        :return: A Flask response with status 200 on success, 400 for an
+            invalid token, or 500 when the session cannot be destroyed.
+        """
+        if hasattr(logout_token, "form"):
+            logout_token = logout_token.form.get("logout_token")
+        if logout_token is None:
+            logout_token = request.form.get("logout_token")
+
+        try:
+            claims = self.parse_logout_token(logout_token, consume_jti=False)
+            if not self.validate_jti(claims, claims["jti"]):
+                raise InvalidLogoutTokenError(
+                    "jti", "The back-channel logout token was already used."
+                )
+        except InvalidLogoutTokenError as error:
+            return {
+                "error": error.error,
+                "error_description": error.description,
+            }, 400
+
+        hook = destroy_session or logout or self.destroy_session
+        try:
+            call_destroy_session(hook, claims)
+        except Exception:
+            self.release_jti(claims["jti"])
+            error = BackchannelLogoutError()
+            return {
+                "error": error.error,
+                "error_description": "The local session could not be destroyed.",
+            }, error.status_code
+        return "", 200
+
+    handle_backchannel_logout = backchannel_logout
 
     def logout_redirect(
         self, post_logout_redirect_uri=None, id_token_hint=None, **kwargs

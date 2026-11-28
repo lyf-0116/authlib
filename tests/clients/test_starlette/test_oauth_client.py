@@ -3,6 +3,7 @@ import json
 import httpx2
 import pytest
 from httpx2 import ASGITransport
+from joserfc import jwk
 from starlette.config import Config
 from starlette.datastructures import URL
 from starlette.requests import Request
@@ -12,10 +13,14 @@ from authlib.common.urls import urlparse
 from authlib.integrations.base_client import MismatchingIssuerError
 from authlib.integrations.starlette_client import OAuth
 from authlib.integrations.starlette_client import OAuthError
+from authlib.oidc.backchannel import create_logout_token
+from tests.util import HMAC_SECRET
 
 from ..asgi_helper import AsyncMockDispatch
 from ..asgi_helper import AsyncPathMapDispatch
 from ..util import get_bearer_token
+
+secret_key = jwk.import_key(HMAC_SECRET, "oct")
 
 
 class AsyncDummyCache:
@@ -32,6 +37,35 @@ class AsyncDummyCache:
 
     async def delete(self, key):
         self._data.pop(key, None)
+
+
+@pytest.mark.asyncio
+async def test_backchannel_logout():
+    """A valid logout token destroys the local session identified by sub and sid."""
+    oauth = OAuth()
+    client = oauth.register(
+        "dev",
+        client_id="dev",
+        client_secret="dev",
+        issuer="https://provider.test",
+        jwks={"keys": [secret_key.as_dict()]},
+        id_token_signing_alg_values_supported=["HS256"],
+    )
+    token = create_logout_token(
+        "https://provider.test",
+        "dev",
+        secret_key,
+        algorithm="HS256",
+        sub="user-1",
+        sid="sess-1",
+    )
+    destroyed = []
+    client.destroy_session = lambda sub, sid: destroyed.append((sub, sid))
+
+    response = await client.backchannel_logout(logout_token=token)
+
+    assert response.status_code == 200
+    assert destroyed == [("user-1", "sess-1")]
 
 
 def test_register_remote_app():

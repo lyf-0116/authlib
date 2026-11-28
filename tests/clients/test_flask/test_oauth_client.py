@@ -16,11 +16,14 @@ from authlib.integrations.flask_client import OAuth
 from authlib.integrations.flask_client import OAuthError
 from authlib.oauth2.rfc6749.errors import MissingCodeException
 from authlib.oauth2.rfc7636 import create_s256_code_challenge
+from authlib.oidc.backchannel import create_logout_token
 from authlib.oidc.core.grants.util import create_half_hash
 from tests.util import HMAC_SECRET
 
 from ..util import get_bearer_token
 from ..util import mock_send_value
+
+secret_key = jwk.import_key(HMAC_SECRET, "oct")
 
 
 def test_register_remote_app():
@@ -888,6 +891,94 @@ def test_openid_authorize():
             token = client.authorize_access_token()
             assert token["access_token"] == "a"
             assert "userinfo" in token
+
+
+def test_backchannel_logout():
+    """A valid logout token destroys the session identified by sub and sid."""
+    app = Flask(__name__)
+    app.secret_key = "!"
+    oauth = OAuth(app)
+    client = oauth.register(
+        "dev",
+        client_id="dev",
+        client_secret="dev",
+        issuer="https://provider.test",
+        jwks={"keys": [secret_key.as_dict()]},
+        id_token_signing_alg_values_supported=["HS256"],
+    )
+    token = create_logout_token(
+        "https://provider.test",
+        "dev",
+        secret_key,
+        algorithm="HS256",
+        sub="user-1",
+        sid="sess-1",
+    )
+    destroyed = []
+    client.destroy_session = lambda sub, sid: destroyed.append((sub, sid))
+
+    with app.test_request_context(data={"logout_token": token}, method="POST"):
+        resp = client.backchannel_logout()
+
+    assert resp[1] == 200
+    assert destroyed == [("user-1", "sess-1")]
+
+
+def test_backchannel_logout_rejects_replayed_token():
+    """A logout token jti can only be consumed once."""
+    app = Flask(__name__)
+    app.secret_key = "!"
+    oauth = OAuth(app)
+    client = oauth.register(
+        "dev",
+        client_id="dev",
+        client_secret="dev",
+        issuer="https://provider.test",
+        jwks={"keys": [secret_key.as_dict()]},
+        id_token_signing_alg_values_supported=["HS256"],
+    )
+    token = create_logout_token(
+        "https://provider.test",
+        "dev",
+        secret_key,
+        algorithm="HS256",
+        sub="user-1",
+    )
+    client.destroy_session = lambda sub, sid: None
+
+    with app.test_request_context(data={"logout_token": token}, method="POST"):
+        assert client.backchannel_logout()[1] == 200
+        assert client.backchannel_logout()[1] == 400
+
+
+def test_backchannel_logout_session_failure():
+    """A session store failure is distinct from an invalid token."""
+    app = Flask(__name__)
+    app.secret_key = "!"
+    oauth = OAuth(app)
+    client = oauth.register(
+        "dev",
+        client_id="dev",
+        client_secret="dev",
+        issuer="https://provider.test",
+        jwks={"keys": [secret_key.as_dict()]},
+        id_token_signing_alg_values_supported=["HS256"],
+    )
+    token = create_logout_token(
+        "https://provider.test",
+        "dev",
+        secret_key,
+        algorithm="HS256",
+        sub="user-1",
+    )
+
+    def fail(sub, sid):
+        raise RuntimeError("session store unavailable")
+
+    client.destroy_session = fail
+
+    with app.test_request_context(data={"logout_token": token}, method="POST"):
+        assert client.backchannel_logout()[1] == 500
 
 
 def test_oauth2_access_token_with_post():

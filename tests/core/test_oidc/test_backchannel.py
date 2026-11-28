@@ -13,9 +13,11 @@ from authlib.oauth2.rfc6749 import ClientMixin
 from authlib.oidc import backchannel
 from authlib.oidc import discovery
 from authlib.oidc.backchannel import BACKCHANNEL_LOGOUT_EVENT
+from authlib.oidc.backchannel import BackchannelLogoutReceiver
 from authlib.oidc.backchannel import BackchannelLogoutSender
 from authlib.oidc.backchannel import ClientMetadataClaims
 from authlib.oidc.backchannel import create_logout_token
+from authlib.oidc.backchannel import validate_logout_token
 from tests.util import read_file_path
 
 ISSUER = "https://provider.test"
@@ -501,6 +503,174 @@ def test_sender_passes_sid_to_token():
     claims = decode_token(sender.delivered[0][2]).claims
     assert claims["sub"] == "user-1"
     assert claims["sid"] == "sess-xyz"
+
+
+def test_validate_logout_token():
+    """A valid logout token returns its claims."""
+    token = create_logout_token(
+        ISSUER, CLIENT_ID, get_private_jwks(), sub="user-1", sid="sess-abc"
+    )
+    claims = validate_logout_token(
+        token,
+        get_private_jwks(),
+        issuer=ISSUER,
+        audience=CLIENT_ID,
+    )
+
+    assert claims["iss"] == ISSUER
+    assert claims["aud"] == CLIENT_ID
+    assert claims["sub"] == "user-1"
+    assert claims["sid"] == "sess-abc"
+    assert BACKCHANNEL_LOGOUT_EVENT in claims["events"]
+
+
+def test_validate_logout_token_wrong_issuer():
+    token = create_logout_token(ISSUER, CLIENT_ID, get_private_jwks(), sub="user-1")
+    with pytest.raises(InvalidClaimError, match="iss"):
+        validate_logout_token(
+            token,
+            get_private_jwks(),
+            issuer="https://attacker.test",
+            audience=CLIENT_ID,
+        )
+
+
+def test_validate_logout_token_wrong_audience():
+    token = create_logout_token(ISSUER, CLIENT_ID, get_private_jwks(), sub="user-1")
+    with pytest.raises(InvalidClaimError, match="aud"):
+        validate_logout_token(
+            token,
+            get_private_jwks(),
+            issuer=ISSUER,
+            audience="another-client",
+        )
+
+
+def test_validate_logout_token_nonce_rejected():
+    key = get_private_jwks()
+    now = int(time.time())
+    token = jwt.encode(
+        {"alg": "RS256", "typ": "logout+jwt"},
+        {
+            "iss": ISSUER,
+            "aud": CLIENT_ID,
+            "iat": now,
+            "exp": now + 120,
+            "jti": "id-1",
+            "events": {BACKCHANNEL_LOGOUT_EVENT: {}},
+            "sub": "user-1",
+            "nonce": "n",
+        },
+        key,
+    )
+    with pytest.raises(InvalidClaimError, match="nonce"):
+        validate_logout_token(token, key, issuer=ISSUER, audience=CLIENT_ID)
+
+
+def test_validate_logout_token_requires_logout_event():
+    key = get_private_jwks()
+    now = int(time.time())
+    token = jwt.encode(
+        {"alg": "RS256", "typ": "logout+jwt"},
+        {
+            "iss": ISSUER,
+            "aud": CLIENT_ID,
+            "iat": now,
+            "exp": now + 120,
+            "jti": "id-2",
+            "events": {"http://schemas.openid.net/event/other": {}},
+            "sub": "user-1",
+        },
+        key,
+    )
+    with pytest.raises(InvalidClaimError, match="events"):
+        validate_logout_token(token, key, issuer=ISSUER, audience=CLIENT_ID)
+
+
+def test_validate_logout_token_requires_sub_or_sid():
+    key = get_private_jwks()
+    now = int(time.time())
+    token = jwt.encode(
+        {"alg": "RS256", "typ": "logout+jwt"},
+        {
+            "iss": ISSUER,
+            "aud": CLIENT_ID,
+            "iat": now,
+            "exp": now + 120,
+            "jti": "id-3",
+            "events": {BACKCHANNEL_LOGOUT_EVENT: {}},
+        },
+        key,
+    )
+    with pytest.raises(Exception, match="sub"):
+        validate_logout_token(token, key, issuer=ISSUER, audience=CLIENT_ID)
+
+
+def test_validate_logout_token_expired():
+    key = get_private_jwks()
+    now = int(time.time())
+    token = jwt.encode(
+        {"alg": "RS256", "typ": "logout+jwt"},
+        {
+            "iss": ISSUER,
+            "aud": CLIENT_ID,
+            "iat": now - 600,
+            "exp": now - 300,
+            "jti": "id-4",
+            "events": {BACKCHANNEL_LOGOUT_EVENT: {}},
+            "sub": "user-1",
+        },
+        key,
+    )
+    with pytest.raises(Exception, match="exp"):
+        validate_logout_token(token, key, issuer=ISSUER, audience=CLIENT_ID, leeway=0)
+
+
+def test_receiver_rejects_replayed_jti():
+    token = create_logout_token(ISSUER, CLIENT_ID, get_private_jwks(), sub="user-1")
+
+    class Receiver(BackchannelLogoutReceiver):
+        def __init__(self):
+            super().__init__(
+                issuer=ISSUER,
+                audience=CLIENT_ID,
+                jwks=get_private_jwks(),
+            )
+            self.destroyed = []
+
+        def destroy_session(self, sub, sid):
+            self.destroyed.append((sub, sid))
+
+    receiver = Receiver()
+    assert receiver.handle(token) == 200
+    assert receiver.destroyed == [("user-1", None)]
+
+    assert receiver.handle(token) == 400
+    assert receiver.destroyed == [("user-1", None)]
+
+
+def test_receiver_session_failure_status():
+    token = create_logout_token(ISSUER, CLIENT_ID, get_private_jwks(), sub="user-1")
+
+    class Receiver(BackchannelLogoutReceiver):
+        def __init__(self):
+            super().__init__(
+                issuer=ISSUER,
+                audience=CLIENT_ID,
+                jwks=get_private_jwks(),
+            )
+            self.fail = True
+
+        def destroy_session(self, sub, sid):
+            if self.fail:
+                raise RuntimeError("session store unavailable")
+
+    receiver = Receiver()
+    assert receiver.handle(token) == 500
+
+    # A temporary session store failure does not consume the token forever.
+    receiver.fail = False
+    assert receiver.handle(token) == 200
 
 
 def test_backchannel_logout_uri_valid():
